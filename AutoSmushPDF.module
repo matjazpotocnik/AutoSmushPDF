@@ -1,0 +1,762 @@
+<?php
+
+/**
+ * AutoSmushPDF
+ * Compress PDF files
+ *
+ * @version 1.0.0
+ * @author Matjaz Potocnik (matjazp)
+ * @link https://github.com/matjazpotocnik/AutoSmushPDF
+ *
+ * ProcessWire 2.x/3.x, Copyright 2011 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE
+ * https://processwire.com
+ *
+ */
+class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
+
+	/**
+	 * Module info
+	 *
+	 * @return array
+	 *
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title'    => 'Auto Smush PDF',
+			'class'    => 'AutoSmushPDF',
+			'author'   => 'Matja&#382; Poto&#269;nik',
+			'version'  => '1.0.0',
+			'summary'  => 'Compress PDF files',
+			'href'     => '',
+			'icon'     => 'leaf',
+			'singular' => true,
+			'autoload' => true
+		);
+	}
+
+	/**
+	 * Module configuraton values
+	 *
+	 */
+	const API_WEBSERVICE = 'https://api.labstack.com/compress';
+	const API_SIZELIMIT = 10000000; // aka no limit
+	const API_ALLOWED_EXTENSIONS = 'pdf';
+	//const API_QUALITY_DEFAULT = '90'; // not used
+	const CONNECTION_TIMEOUT = 30; // for large files and slow connection 30 sec might not be enough
+	const THRESHOLD = 5; // 5%
+
+	/**
+	 * Array of messages reported by this module
+	 * @var array
+	 */
+	static $messages = array();
+
+	/**
+	 * Array of settings for compressor - not used
+	 * @var array
+	 */
+	protected $compressSettings = array();
+
+	/**
+	 * Array of allowed extensions for files
+	 * @var array
+	 */
+	protected $allowedExtensions = array();
+
+	/**
+	 * Array of error codes returned by web service
+	 * @var array
+	 */
+	protected $apiErrorCodes = array();
+
+	/**
+	 * This module config data
+	 * @var array
+	 */
+	protected $configData = array();
+
+	/**
+	 * PW FileLog object
+	 * @var array
+	 */
+	protected $log;
+
+
+	/**
+	 * Construct and set default configuration
+	 *
+	 */
+	public function __construct() {
+
+		self::$messages = array(
+			'start'            => __('Starting...'),
+			'complete'         => __('All done'),
+			'error'            => __('An error occured, please try again'),
+			'error_read_file'  => __('Error reading file'),
+			'error_write_file' => __('Error writing file'),
+			'save_first'       => __('Module settings have been modified, please save first'),
+			'confirm'          => __('Are you sure to continue?'),
+			'canceled'         => __('Canceled')
+		);
+
+		$this->optimizeSettings = array(
+		);
+
+		$this->allowedExtensions = array_map('trim', explode(',', self::API_ALLOWED_EXTENSIONS));
+
+		// not used
+		$this->apiErrorCodes = array(
+			'400' => __('no url of image provided'),
+			'401' => __('impossible to fetch the image from URL (usually a local URL)'),
+			'402' => __('impossible to fetch the image from $_FILES (usually a local URL)'),
+			'403' => __('forbidden file format provided. Works strictly with jpg, png, gif, tif and bmp files.'),
+			'501' => __('internal error, cannot create a local copy'),
+			'502' => __('image provided too large (must be below 5MB)'),
+			'503' => __('internal error, could not reach remote reSmush.it servers for image optimization'),
+			'504' => __('internal error, could not fetch picture from remote reSmush.it servers')
+		);
+	}
+
+
+	/**
+	 * Initialize log file
+	 *
+	 */
+	public function init() {
+		$cls = strtolower(__CLASS__);
+
+		// pruneBytes returns error in PW prior to 3.0.13 if file does not exist
+		if(!file_exists($this->wire('log')->getFilename($cls))) {
+			$this->wire('log')->save($cls, 'log file created', array('showUser' => false, 'showURL' => false));
+		}
+
+		$this->log = new FileLog($this->wire('log')->getFilename($cls));
+		method_exists($this->log, __CLASS__) ? $this->log->pruneBytes(20000) : $this->log->prune(20000);
+	}
+
+	/**
+	 * Hook before InputfieldFile::fileAdded in auto mode
+	 * Compress on upload
+	 *
+	 * @param HookEvent $event
+	 * @return bool false if image extension is not in allowedExtensions
+	 *
+	 */
+	public function compressOnUpload($event) {
+		$pdf = $event->argumentsByName('pagefile');
+
+/*
+object(ProcessWire\Pagefile)#315 (1) {
+  ["data"]=>
+  array(6) {
+    ["basename"]=>
+    string(18) "odgovorhorst-1.txt"
+    ["description"]=>
+    string(0) ""
+    ["tags"]=>
+    string(0) ""
+    ["formatted"]=>
+    bool(false)
+    ["modified"]=>
+    int(1479702793)
+    ["created"]=>
+    int(10)
+  }
+}
+*/
+
+		if(!$pdf instanceof Pagefile) return;
+
+		// ensure only pdf files are compress
+		if(!in_array($pdf->ext, $this->allowedExtensions)) {
+			return;
+		}
+
+		// compress
+		$this->compress($pdf, true, 'auto');
+	}
+
+	/**
+	 * Hook after InputfieldFile::renderItem in manual mode
+	 * Add compress link to the file markup
+	 *
+	 * @param HookEvent $event
+	 *
+	 */
+	public function addOptButton($event) {
+
+		$dom = new DOMDocument();
+		$internalErrors = libxml_use_internal_errors(true); //to prevent errors, better than @
+		$dom->loadHTML($event->return);
+		libxml_use_internal_errors($internalErrors);
+		if($dom === false) return;
+
+		$xpath = new DOMXpath($dom);
+		$opturl = $xpath->query('//a[contains(@class,"InputfieldFileName")]');
+
+		if($opturl->length !== 0) {
+			// InputfieldFileName class found
+			// the same markup is used for images
+			// href = /site/assets/files/1234/file.ext
+			$opturl = $opturl->item(0)->getAttribute("href");
+			if($opturl === '') return; //not found, something is wrong, markup changed?
+
+			$opturl1 = str_replace($this->wire('config')->urls->files, '', $opturl); //remains 1234/file.ext
+			$id = explode("/", $opturl1)[0];
+			$file = explode("/", $opturl1)[1];
+			$ext = substr($file, strrpos($file, ".") + 1);
+			if(!in_array($ext, $this->allowedExtensions)) return; // is not pdf file
+
+			$opturl = $this->wire('config')->urls->admin . 'module/edit?name=' . __CLASS__ . "&mode=compresspdf&id=$id&file=$opturl";
+			if(stripos($event->return, '</p>')) { //insert link right before </p>
+				$event->return = str_replace("</p>", "<a href='" . $opturl . "' class='InputfieldFileCompress' title='Compress file'>Compress</a></p>", $event->return);
+			}
+		}
+	}
+
+	/**
+	 * Compress file via ajax request when compress link is clicked
+	 *
+	 * @return string
+	 *
+	 */
+	public function onclickCompress() {
+
+		$err = "<i style='color:red' class='fa fa-times-circle'></i>";
+
+		$file = $this->wire('input')->get('file'); // /site/assets/files/1234/file.ext
+		$file1 = str_replace($this->wire('config')->urls->files, '', $file); //remains 1234/file.ext
+		$id = explode('/', $file1)[0]; // 1234
+		$basename = explode('/', $file1)[1]; // file.ext
+		$ext = substr($basename, strrpos($basename, '.') + 1); // ext
+		if(!in_array($ext, $this->allowedExtensions)) return; // is not pdf file
+
+		//$page = $this->wire('pages')->get($id);
+		//now I have to find field name with this file ... too complicated
+		//$pagefile = new Pagefile($page->files, '/path/to/file.pdf');
+
+		$pdf = new Field();
+		$pdf->type = $this->wire('modules')->get('FieldtypeFile');
+		$pdf->basename = $basename;
+		$pdf->ext = $ext;
+		$pdf->filename = $this->wire('config')->paths->files . $id . "/$basename";
+		$pdf->filesize = filesize($pdf->filename);
+		$pdf->httpUrl = $file; //MP moral bi biti fullpath
+
+		//check if file exist, it should...
+		/*if(!$myimage) {
+			$msg = "File not found";
+			$this->log->save($msg);
+			echo $err;
+			exit(0);
+		}*/
+
+		$src_size = filesize($pdf->filename);
+
+		$this->compress($pdf, true, 'manual');
+
+		clearstatcache(true, $pdf->filename);
+		$dest_size = filesize($pdf->filename);
+		$percentNew = 100 - (int) ($dest_size / $src_size * 100);
+
+		printf(__('Compressed, reduced by %1$d%%'), $percentNew);
+
+		exit(0);
+	}
+
+	/**
+	 * Process bulk optimize of all images, called from this module settings
+	 * in bulk mode, on button click
+	 *
+	 */
+	public function bulkCompress() {
+
+		// check if engine is selected
+		if(!isset($this->configData['optBulkEngine'])) {
+			$this->writeProgressFile($this->getProgressFile(), array(
+				'percentComplete' => "",
+				'error'           => "ERROR: No engine selected.", // message displayed in progressbar
+				'file'            => "ERROR", // indicator that error occured
+				'basedir'         => "",
+				'url'             => ""
+			));
+			$this->log->save("No engine selected (bulk).");
+			exit(0);
+		}
+
+		$allFiles = array();
+		$selector = "type=FieldtypeFile";
+		/*
+		// returns all Fields that extend FieldtypeFile, but without FieldtypeFile
+		$pdf = new Field();
+		$pdf->type = $modules->get("FieldtypeFile");
+		$fieldtypes = $pdf->type->getCompatibleFieldtypes($pdf)->getItems();
+		unset($fieldtypes["FieldtypeFile"]);
+		$selector .= implode("|",array_keys($fieldtypes));
+		*/
+		foreach ($this->wire('fields')->find($selector) as $f) {
+			foreach ($this->wire('pages')->find("$f>0, include=all") as $p) {
+				$files = $p->getUnformatted($f->name);
+				foreach ($files as $file) {
+					if(in_array($file->ext, $this->allowedExtensions)) {
+						$allFiles[] = $file;
+					}
+				}
+			}
+		}
+
+		$totalItems = count($allFiles);
+
+		@unlink($this->getProgressFile());
+		@unlink($this->getCancelFile());
+
+		// important!
+		@session_write_close();
+
+		set_time_limit(3600);
+
+		for ($i = 0; $i < $totalItems; $i ++) {
+
+			$pdf = $allFiles[$i];
+			$error = null;
+
+			if (!file_exists($pdf->filename)) {
+				$error = $this->getMessage('error_read_file');
+				$this->log->save($error);
+			} else {
+				$this->compress($pdf, true, 'bulk', $i+1, $totalItems, $error);
+			}
+
+			if (file_get_contents($this->getCancelFile()) === "1") {
+				// Cancel button pressed, bail out
+				break;
+			}
+		}
+
+	exit(0);
+	}
+
+
+	/**
+	 * Compress file
+	 *
+	 * @param Pagefile $pdf Pagefile object
+	 * @param boolean $force true, when you want to force file compress
+	 * @param string $mode 'auto', 'manual' or 'bulk'
+	 * @param int|null $counter used when called from bulkCompress(), current file number
+	 * @param int $total used when called from bulkCompress(), total number of files
+	 * @param string|null $error error message
+	 * @return boolean false on error
+	 *
+	 */
+	public function compress($pdf, $force = false, $mode = 'auto', $counter = null, $total = 1, $error = null) {
+
+		if (!is_null($error)) {
+			$this->writeProgressFile($this->getProgressFile(), array(
+				'percentComplete' => (int) ($counter / $total * 100) . "", //type casting
+				'error'           => $error,
+				'file'            => $pdf->basename,
+				'basedir'         => basename(dirname($pdf->filename)),
+				'url'             => $pdf->httpUrl
+			));
+			$this->log->save($error);
+			return false;
+		}
+
+		if (!in_array($pdf->ext, $this->allowedExtensions)) {
+			$error = 'Error optimizing ' . $pdf->filename . ': unsupported extension';
+			$this->log->save($error);
+			return false;
+		}
+
+		$percentNew = 0;
+		$opt = $src_size = $dest_size = $q = '';
+		$mode1 = ucfirst(strtolower($mode));
+		//if (isset($this->configData["opt{$mode1}Quality"])) $q = $this->configData["opt{$mode1}Quality"];
+		//array_push($this->optimizeSettings['jpegoptim_options'], '-m' . $q);
+		//$this->optimizeSettings['jpegoptim_options'] = array_unique($this->optimizeSettings['jpegoptim_options']);
+
+		if (isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'labstack') {
+			// use labStack web service
+			$opt = "labStack ($mode): ";
+
+			if ($pdf->filesize >= self::API_SIZELIMIT) {
+				$error = 'Error optimizing ' . $pdf->filename . ': file larger then ' . self::API_SIZELIMIT . ' bytes';
+				$this->log->save($error);
+				return false;
+			}
+
+			/* alternative using curl instead od WireHttp class
+			$ch = curl_init();
+			curl_setopt($ch, CURLOPT_URL, self::API_WEBSERVICE);
+			// https options
+			curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+			curl_setopt($ch, CURLOPT_TIMEOUT, self::CONNECTION_TIMEOUT);
+			curl_setopt($ch, CURLOPT_POST, true);
+			if (version_compare(PHP_VERSION, '5.5') >= 0) {
+					$postfields = array ('file' => new CURLFile($pdf->filename, 'application/pdf', $pdf->basename));
+					curl_setopt($ch, CURLOPT_SAFE_UPLOAD, true);
+			} else {
+					$postfields = array ('file' => '@'.$pdf->filename);
+			}
+			curl_setopt($ch, CURLOPT_POSTFIELDS, $postfields);
+
+			$data = curl_exec($ch);
+
+			if($data === false || curl_errno($ch)) {
+				$error = 'Error optimizing ' . $pdf->filename . ': cURL error: ' . curl_error($ch);
+				$this->log->save($error);
+				return false;
+			}
+			curl_close($ch);
+			*/
+
+			$http = new WireHttp();
+			$http->setTimeout(self::CONNECTION_TIMEOUT); // important!!! default is 4.5 sec and that is to low
+			$eol = "\r\n";
+			$content = '';
+			$boundary = strtolower(md5(time()));
+			$content .= '--' . $boundary . $eol;
+			$content .= 'Content-Disposition: form-data; name="file"; filename="' . $pdf->basename . '"' . $eol;
+			$content .= 'Content-Type: application/pdf' . $eol . $eol; // two eol's!!!!!
+			$content .= file_get_contents($pdf->filename) .$eol;
+			$content .= "--" . $boundary . "--" . $eol;
+			$http->setHeader('Content-Type', 'multipart/form-data; boundary=' . $boundary);
+			$data = $http->post(self::API_WEBSERVICE, $content);
+			if (is_bool($data)) {
+				$error = 'Error compressing ' . $pdf->filename . ': ';
+				$error .= $data === true ? "request timeout" : $http->getHttpCode(true);
+				$this->log->save($error);
+				return false;
+			}
+
+			$response = json_decode($data);
+
+			if ($response === null) {
+				$error = 'Error compressing ' . $pdf->filename . ': returned data is empty';
+				$this->log->save($error);
+				return false;
+			}
+
+			// write api error from webservice to json and log file
+			// don't know what I get back...
+			/*if (isset($response->error)) {
+				$error = isset($this->apiErrorCodes[$response->error]) ? ucfirst($this->apiErrorCodes[$response->error]) : $response->error;
+				$this->writeProgressFile($this->getProgressFile(), array(
+					'error_api' => $error,
+					'percentComplete' => (int) ($counter / $total * 100) . "", //type casting
+					'file' => $img->basename,
+					'basedir' => basename(dirname($img->filename)),
+					'url' => $img->httpUrl
+				));
+				$error = 'Error optimizing ' . $img->filename . ': reshmush.it error: ' . $error;
+				$this->log->save($error);
+				return false;
+			}*/
+
+			$dest_size = $response->compressed_file->size;
+			$src_size = $response->file->size;
+
+			// write to file only if compressed file is smaller
+			if ((int) $dest_size < (int) $src_size) {
+				$http = new WireHttp();
+				try {
+					$http->download(self::API_WEBSERVICE . "/" . $response->id . "/download", $pdf->filename);
+					$percentNew = 100 - (int) ($dest_size / $src_size * 100);
+				} catch(Exception $e) {
+					$error = 'Error retreiving file: ' . $e->getMessage();
+					$this->log->save($error);
+					return false;
+				}
+			}
+		} else if (isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'localtools') {
+			// use local tools
+			$opt = "LocalTools ($mode): ";
+
+			$src_size = filesize($pdf->filename);
+
+			// Compress
+
+			clearstatcache(true, $pdf->filename);
+			$dest_size = filesize($pdf->filename);
+			$percentNew = 100 - (int) ($dest_size / $src_size * 100);
+		} else {
+			// no engine selected
+			$opt = "No engine selected ($mode). ";
+			$src_size = filesize($pdf->filename);
+			$this->log->save($opt . $pdf->filename . ', source ' . $src_size . ' bytes');
+			return $opt;
+		}
+
+		$this->log->save($opt . $pdf->filename . ', source ' . $src_size . ' bytes, destination ' . $dest_size . ' bytes, reduction ' . $percentNew . '%');
+
+		if (!is_null($counter) && !is_null($total)) {
+			$this->writeProgressFile($this->getProgressFile(), array(
+				'percentComplete' => (int) ($counter / $total * 100) . "",
+				'counter'         => sprintf(__('Compressing file %1$d out of %2$d - %3$d%% complete'),
+				                     $counter, $total, (int) ($counter / $total * 100)),
+				'percentNew'      => $percentNew . "",
+				'error'           => $error,
+				'file'            => $pdf->basename,
+				'basedir'         => basename(dirname($pdf->filename)),
+				'url'             => $pdf->httpUrl
+			));
+		}
+
+	}
+
+	/**
+	 * Module fields
+	 *
+	 * @param array $data config data
+	 * @return InputfieldWrapper
+	 *
+	 */
+	public function getModuleConfigInputfields(array $data) {
+
+		$fields = new InputfieldWrapper();
+		$modules = $this->wire('modules');
+
+		// automatic mode
+		$fieldset = $modules->get("InputfieldFieldset");
+    $fieldset->label = __("Automatic Mode");
+    $fieldset->description = __("Automatically optimize PDF files on upload.");
+    $fields->add($fieldset);
+
+		/*$field                = $modules->get('InputfieldRadios');
+		$field->name          = 'optAutoEngine';
+		$field->label         = __('Engine');
+		$field->columnWidth   = 50;
+		$field->addOption('labstack',  __('Use labStack online service'));
+		//$field->addOption('localtools', __('Use local optimization tools'));
+		$field->value         = isset($data['optAutoEngine']) ? $data['optAutoEngine'] : 'labstack';
+		$fieldset->add($field);*/
+		$data['optAutoEngine'] = 'labstack';
+
+		$field                = $modules->get('InputfieldCheckboxes');
+		$field->name          = 'optAutoAction';
+		$field->label         = __('Action');
+		//$field->columnWidth   = 50;
+		$field->addOption('compress_originals', __('Compress on upload'));
+		$field->value         = isset($data['optAutoAction']) ? $data['optAutoAction'] : array();
+		$fieldset->add($field);
+
+
+		// manual mode
+		$fieldset = $modules->get("InputfieldFieldset");
+    $fieldset->label = __("Manual Mode");
+    $fieldset->description = __("Add \"Compress\" link to page.");
+    $fields->add($fieldset);
+
+		/*$field                = $modules->get('InputfieldRadios');
+		$field->name          = 'optManualEngine';
+		$field->label         = __('Engine');
+		$field->columnWidth   = 50;
+		$field->addOption('labstack',  __('Use labStack online service'));
+		//$field->addOption('localtools', __('Use local optimization tools'));
+		$field->value         = isset($data['optManualEngine']) ? $data['optManualEngine'] : 'labstack';
+		$fieldset->add($field);*/
+		$data['optManualEngine'] = 'labstack';
+
+		$field                = $modules->get('InputfieldCheckboxes');
+		$field->name          = 'optManualAction';
+		$field->label         = __('Action');
+		//$field->columnWidth   = 50;
+		$field->addOption('compress_originals',  __('Add link to file edit page'));
+		$field->value         = isset($data['optManualAction']) ? $data['optManualAction'] : array('compress_originals');
+		$fieldset->add($field);
+
+
+		// bulk mode
+		$fieldset = $modules->get("InputfieldFieldset");
+		$fieldset->name = "bulkcompress_fieldset";
+    $fieldset->label = __("Bulk Mode");
+    $fieldset->description = __("Compress ALL PDF files on button click.");
+    $fields->add($fieldset);
+
+		/*$field                = $modules->get('InputfieldRadios');
+		$field->attr('id+name', 'optBulkEngine');
+		$field->label         = __('Engine');
+		$field->columnWidth   = 50;
+		$field->addOption('labstack',  __('Use labStack online service'));
+		//$field->addOption('localtools', __('Use local optimization tools'));
+		$field->value         = isset($data['optBulkEngine']) ? $data['optBulkEngine'] : 'labstack';
+		$fieldset->add($field);*/
+		$data['optBulkEngine'] = 'labstack';
+
+		$field                = $modules->get('InputfieldMarkup');
+		$field->id            = 'bulkcompress';
+		$field->label         = __('Bulk compress');
+		$field->icon          = 'coffee';
+		$field->description   = __('Click the button below to process all PDF files sitewide.');
+		$field->value         = '<p class="description" style="margin-bottom:0;margin-top:-1em"><strong>' .
+		                        __('WARNING: this process may take a while to finish!') .
+		                        '</strong></p>';
+
+			$field_button = $modules->get('InputfieldButton');
+			$field_button->attr('id+name', 'compress_all');
+			$field_button->attr('data-url', 'edit?name=' . __CLASS__ . '&mode=bulkpdf');
+			$field_button->attr('data-progress-url', $this->getProgressFile(true));
+			$field_button->attr('data-start-msg', $this->getMessage('start'));
+			$field_button->attr('data-complete-msg', $this->getMessage('complete'));
+			$field_button->attr('data-error-msg', $this->getMessage('error'));
+			$field_button->attr('data-confirm-msg', $this->getMessage('confirm'));
+			$field_button->attr('data-save-first-msg', $this->getMessage('save_first'));
+			$field_button->value = __('Start bulk pdf compress');
+			$field->add($field_button);
+
+			$field_button = $modules->get('InputfieldButton');
+			$field_button->attr('id+name', 'cancel_all');
+			$field_button->attr('data-url', 'edit?name=' . __CLASS__ . '&mode=cancelpdf');
+			$field_button->attr('data-cancel-url', $this->getCancelFile(true));
+			$field_button->attr('data-canceled-msg', $this->getMessage('canceled'));
+			$field_button->value = __('Cancel');
+			$field->add($field_button);
+
+			$fieldm = $modules->get('InputfieldMarkup');
+			$fieldm->attr('id', 'progbarwrapper');
+			$fieldm->value = '<progress max="100" value="0" id="progressbar"></progress><span id="percent"></span><p id="result"></p>';
+			$field->add($fieldm);
+
+		$fieldset->add($field);
+
+		return $fields;
+	}
+
+	/**
+	 * Get message text
+	 *
+	 * @param string $key
+	 * @return string
+	 *
+	 */
+	private function getMessage($key = '') {
+		return isset(self::$messages[$key]) ? self::$messages[$key] : '';
+	}
+
+	/**
+	 * Return path or url of the progress file
+	 *
+	 * @param bool $url if true return url, if false return path
+	 * @return string
+	 *
+	 */
+	private function getProgressFile($url = false) {
+		$mode = ($url === true) ? 'urls' : 'paths';
+		return $this->wire('config')->$mode->assets . strtolower(__CLASS__) . '/progress.json';
+	}
+
+	/**
+	 * Return path or url of the cancel file
+	 *
+	 * @param bool $url if true return url, if false return path
+	 * @return string
+	 *
+	 */
+	private function getCancelFile($url = false) {
+		$mode = ($url === true) ? 'urls' : 'paths';
+		return $this->wire('config')->$mode->assets . strtolower(__CLASS__) . '/cancel.json';
+	}
+
+	/**
+	 * Write json encoded array to the file
+	 *
+	 * @param string $file
+	 * @param array|mixed $content
+	 *
+	 */
+	private function writeProgressFile($file, $content = null) {
+		if (!is_null($content)) {
+			file_put_contents($file, json_encode($content));
+		}
+	}
+
+
+	/**
+	 * Main entry point
+	 * Set hooks and handle ajax requests
+	 *
+	 */
+	public function ready() {
+
+		$page = $this->wire('page');
+		if ($page->template != 'admin') return;
+
+		$this->configData = $this->wire('modules')->getModuleConfigData($this);
+
+		$config = $this->wire('config');
+		$input = $this->wire('input');
+		$mode = $input->get('mode');
+
+		// needed only for bulk mode in module edit settings
+		if ($input->get('name') === __CLASS__) {
+			$this->wire('modules')->get('JqueryMagnific');
+			$config->scripts->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.js');//?v=' . time());
+			$config->styles->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.css');//?v=' . time());
+		}
+
+		// compress files in bulk mode on button click
+		// be sure to have different name for mode so there is no collision with AutoSmush
+		if ($mode == 'bulkpdf') {
+			$this->bulkCompress();
+		}
+
+		// compress files in manual mode on clicking compress link
+		// be sure to have different name for mode so there is no collision with AutoSmush
+		if ($mode === 'compresspdf') {
+			$this->onclickCompress();
+		}
+
+		// process cancel request in bulk mode
+		// be sure to have different name for mode so there is no collision with AutoSmush
+		if ($mode === 'cancelpdf') {
+			$this->writeProgressFile($this->getCancelFile(), 1);
+			echo "1"; //success
+			exit (0);
+		}
+
+		// add compress link in manual mode on page edit
+		if($page->process == 'ProcessPageEdit' && isset($this->configData['optManualEngine'])) {
+			if(isset($this->configData['optManualAction']) && in_array('compress_originals', $this->configData['optManualAction'])) {
+				// add link
+				$this->addHookAfter('InputfieldFile::renderItem', $this, 'addOptButton');
+			}
+			$config->scripts->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . 'PageEdit.js');//?v=' . time());
+			$config->styles->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . 'PageEdit.css');//?v=' . time());
+		}
+
+		// compress files in auto mode on upload
+		if(isset($this->configData['optAutoAction']) && in_array('compress_originals', $this->configData['optAutoAction'])) {
+		  $this->addHookBefore('InputfieldFile::fileAdded', $this, 'compressOnUpload');
+		}
+
+	}
+
+	/**
+	 * Creates directory /site/assets/autosmushpdf on module install
+	 *
+	 */
+	public function ___install() {
+		$logFolder = $this->wire('config')->paths->assets . strtolower(__CLASS__);
+		if(!is_dir($logFolder)) {
+			if(wireMkdir($logFolder) === false) throw new WireException("{$logFolder} could not be created, check permissions");
+		}
+		$this->writeProgressFile($this->getCancelFile(), 1);
+		if(!is_file($this->getCancelFile())) throw new WireException("{$logFolder} is not writable, check permissions");
+		@unlink($this->getCancelFile());
+	}
+
+	/**
+	 * Removes directory /site/assets/autosmushpdf on module uninstall
+	 *
+	 */
+	public function ___uninstall() {
+		$logFolder = $this->wire('config')->paths->assets . strtolower(__CLASS__);
+		if(is_dir($logFolder)) {
+			if(wireRmdir($logFolder, true) === false) throw new WireException("{$logFolder} could not be removed");
+		}
+	}
+
+}
