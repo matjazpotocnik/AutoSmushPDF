@@ -32,21 +32,6 @@ $(document).ready(function () {
     $(pwasBtn + " span").removeClass();
     $(pwasBtn).button();
 
-    // disable bulk optimize button if module settings were changed
-    $(moduleForm).on("change input", function () {
-        if (!$(pwasBtn).length) {
-            return false;
-        }
-
-        var wrapper = progressBar.parents(".InputfieldContent");
-        wrapper.fadeOut(100, function () {
-            $(pwasBtn).text(pwasMsg.saveFirst);
-            $(pwasBtn).button("disable");
-            $(moduleForm).off("change input");
-        });
-        wrapper.fadeIn(100);
-    });
-
     $(pwcancelBtn).on("click", function (e) {
 
         e.preventDefault();
@@ -77,7 +62,7 @@ $(document).ready(function () {
                 cache: false,
                 success: function (data) {
                     var status = "";
-                    // if optimize engine is not selected
+                    // if compression engine is not selected
                     if (data && data.error !== "" && data.file === "ERROR") {
                         resultElement.html("<span class='status error'>" + data.error + "</span>");
                         return false;
@@ -97,7 +82,7 @@ $(document).ready(function () {
                         }
 
                         resultElement.html(
-                            resultElement.html() + "<a href='" + data.url + "' target='_blank'><span class='faded'>" + data.basedir + "</span><span class='file'>" + data.file + "</span>" + status + "</a>"
+                            resultElement.html() + "<a href='" + data.url + "' target='_blank' rel='noopener'><span class='faded'>" + data.basedir + "</span><span class='file'>" + data.file + "</span>" + status + "</a>"
                         );
                         resultElement.scrollTop(resultElement[0].scrollHeight - resultElement.height()); // scroll to bottom
 
@@ -114,24 +99,6 @@ $(document).ready(function () {
         }
 
         e.preventDefault();
-
-        /*var bulkEngine = $("#wrap_optBulkEngine");
-        if (bulkEngine.find("input:checked").length === 0) {
-            bulkEngine.addClass("inputError");
-            setTimeout(function () {
-                bulkEngine.removeClass("inputError");
-            }, 2000);
-            return false;
-        }
-
-        var bulkAction = $("#wrap_optBulkAction");
-        if (bulkAction.find("input:checked").length === 0) {
-            bulkAction.addClass("inputError");
-            setTimeout(function () {
-                bulkAction.removeClass("inputError");
-            }, 2000);
-            return false;
-        }*/
 
         if (window.confirm(pwasMsg.confirm) === false) {
             return false;
@@ -189,7 +156,7 @@ $(document).ready(function () {
             },
             callbacks: {
                 open: function () {
-                    var imgCaption = currentItem.find(".file").text();
+                    var imgCaption = currentItem.attr("href");
                     this.content.find(".mfp-title").html(imgCaption);
                 }
             }

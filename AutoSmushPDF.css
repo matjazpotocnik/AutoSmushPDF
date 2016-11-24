@@ -2,11 +2,10 @@
     display: none;
 }
 
-progress,
-#result {
+#result,
+progress {
     max-width: 1200px;
 }
-
 #result {
     max-height: 240px;
     overflow: auto;
@@ -15,17 +14,14 @@ progress,
     border-radius: 2px;
     border: 1px solid #ddd;
 }
-
-#percent:empty,
-#result:empty {
+#result:empty,
+#percent:empty {
     display: none;
 }
-
 #result b {
     display: inline-block;
     width: 60px;
 }
-
 #result a {
     display: block;
     line-height: 16px;
@@ -44,16 +40,15 @@ progress,
     left: 4px;
     display: inline-block;
     font: normal normal normal 14px/1 FontAwesome;
-    color: #3EB998;
+    color: #3eb998;
     text-rendering: auto;
     -webkit-font-smoothing: antialiased;
     margin-right: 6px;
 }
-
 #result a .status {
     display: inline-block;
     margin-left: 8px;
-    background-color: #5295D2;
+    background-color: #5295d2;
     padding: 1px 4px;
     color: #fff;
     border-radius: 3px;
@@ -64,7 +59,7 @@ progress,
     content: "%";
 }
 #result a .status.error {
-    background-color: #B94C51;
+    background-color: #b94c51;
 }
 
 #percent {
@@ -96,25 +91,23 @@ progress {
 
     /* Firefox */
     border: none;
-    background: #EEE;
+    background: #eee;
     border-radius: 3px;
     box-shadow: 0 2px 3px rgba(0, 0, 0, 0.2) inset;
 }
-
 progress::-webkit-progress-bar {
-    background: #EEE;
+    background: #eee;
     box-shadow: 0 2px 3px rgba(0, 0, 0, 0.2) inset;
     border-radius: 3px;
 }
 progress::-webkit-progress-value {
-    background: #3EB998;
+    background: #3eb998;
     border-radius: 3px;
 }
 progress::-moz-progress-bar {
-    background: #3EB998;
+    background: #3eb998;
     border-radius: 3px;
 }
-
 progress.error::-moz-progress-bar {
     background: #a00;
 }
@@ -145,15 +138,6 @@ progress.error::-moz-progress-bar {
     margin-left: -.5em;
 }
 
-img.mfp-img {
-    min-width: 400px;
-    height: auto;
-}
-
-.InputfieldForm .inputError {
-    color: #d94C51;
-    background-color: #d94C51;
-}
-.InputfieldForm label.InputfieldHeader {
-    padding-top: .4em;
+.mfp-iframe-holder .mfp-content {
+    max-width: 75% !important;
 }

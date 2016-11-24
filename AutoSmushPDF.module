@@ -4,7 +4,7 @@
  * AutoSmushPDF
  * Compress PDF files
  *
- * @version 1.0.0
+ * @version 1.0.1
  * @author Matjaz Potocnik (matjazp)
  * @link https://github.com/matjazpotocnik/AutoSmushPDF
  *
@@ -26,7 +26,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 			'title'    => 'Auto Smush PDF',
 			'class'    => 'AutoSmushPDF',
 			'author'   => 'Matja&#382; Poto&#269;nik',
-			'version'  => '1.0.0',
+			'version'  => '1.0.1',
 			'summary'  => 'Compress PDF files',
 			'href'     => '',
 			'icon'     => 'leaf',
@@ -44,7 +44,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 	const API_ALLOWED_EXTENSIONS = 'pdf';
 	//const API_QUALITY_DEFAULT = '90'; // not used
 	const CONNECTION_TIMEOUT = 30; // for large files and slow connection 30 sec might not be enough
-	const THRESHOLD = 5; // 5%
+	//const THRESHOLD = 5; // 5%, not used
 
 	/**
 	 * Array of messages reported by this module
@@ -124,6 +124,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 	 *
 	 */
 	public function init() {
+
 		$cls = strtolower(__CLASS__);
 
 		// pruneBytes returns error in PW prior to 3.0.13 if file does not exist
@@ -133,6 +134,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 
 		$this->log = new FileLog($this->wire('log')->getFilename($cls));
 		method_exists($this->log, __CLASS__) ? $this->log->pruneBytes(20000) : $this->log->prune(20000);
+
 	}
 
 	/**
@@ -144,37 +146,16 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 	 *
 	 */
 	public function compressOnUpload($event) {
+
 		$pdf = $event->argumentsByName('pagefile');
 
-/*
-object(ProcessWire\Pagefile)#315 (1) {
-  ["data"]=>
-  array(6) {
-    ["basename"]=>
-    string(18) "odgovorhorst-1.txt"
-    ["description"]=>
-    string(0) ""
-    ["tags"]=>
-    string(0) ""
-    ["formatted"]=>
-    bool(false)
-    ["modified"]=>
-    int(1479702793)
-    ["created"]=>
-    int(10)
-  }
-}
-*/
-
+		// ensure only pdf files are compressed
 		if(!$pdf instanceof Pagefile) return;
-
-		// ensure only pdf files are compress
-		if(!in_array($pdf->ext, $this->allowedExtensions)) {
-			return;
-		}
+		if(!in_array($pdf->ext, $this->allowedExtensions)) return;
 
 		// compress
 		$this->compress($pdf, true, 'auto');
+
 	}
 
 	/**
@@ -185,34 +166,19 @@ object(ProcessWire\Pagefile)#315 (1) {
 	 *
 	 */
 	public function addOptButton($event) {
+		// $event->object = InputfieldFile
+		// $event->object->value = Pagefiles
+		// $event->arguments[0] or $event->argumentsByName('pagefile') = Pagefile
 
-		$dom = new DOMDocument();
-		$internalErrors = libxml_use_internal_errors(true); //to prevent errors, better than @
-		$dom->loadHTML($event->return);
-		libxml_use_internal_errors($internalErrors);
-		if($dom === false) return;
+		$file = $event->argumentsByName('pagefile');
+		if(!in_array($file->ext, $this->allowedExtensions)) return; // is not pdf file
 
-		$xpath = new DOMXpath($dom);
-		$opturl = $xpath->query('//a[contains(@class,"InputfieldFileName")]');
-
-		if($opturl->length !== 0) {
-			// InputfieldFileName class found
-			// the same markup is used for images
-			// href = /site/assets/files/1234/file.ext
-			$opturl = $opturl->item(0)->getAttribute("href");
-			if($opturl === '') return; //not found, something is wrong, markup changed?
-
-			$opturl1 = str_replace($this->wire('config')->urls->files, '', $opturl); //remains 1234/file.ext
-			$id = explode("/", $opturl1)[0];
-			$file = explode("/", $opturl1)[1];
-			$ext = substr($file, strrpos($file, ".") + 1);
-			if(!in_array($ext, $this->allowedExtensions)) return; // is not pdf file
-
-			$opturl = $this->wire('config')->urls->admin . 'module/edit?name=' . __CLASS__ . "&mode=compresspdf&id=$id&file=$opturl";
-			if(stripos($event->return, '</p>')) { //insert link right before </p>
-				$event->return = str_replace("</p>", "<a href='" . $opturl . "' class='InputfieldFileCompress' title='Compress file'>Compress</a></p>", $event->return);
-			}
+		$url = $this->wire('config')->urls->admin . 'module/edit?name=' . __CLASS__ . "&mode=compresspdf&id={$file->page->id}&file={$file->url}";
+		$link = "<a href='$url' class='InputfieldFileCompress' title='Compress file'>" . $this->_("Compress") ."</a>";
+		if(stripos($event->return, '</p>')) { //insert link right before </p>
+			$event->return = str_replace("</p>", $link . "</p>", $event->return);
 		}
+
 	}
 
 	/**
@@ -226,43 +192,23 @@ object(ProcessWire\Pagefile)#315 (1) {
 		$err = "<i style='color:red' class='fa fa-times-circle'></i>";
 
 		$file = $this->wire('input')->get('file'); // /site/assets/files/1234/file.ext
-		$file1 = str_replace($this->wire('config')->urls->files, '', $file); //remains 1234/file.ext
-		$id = explode('/', $file1)[0]; // 1234
-		$basename = explode('/', $file1)[1]; // file.ext
-		$ext = substr($basename, strrpos($basename, '.') + 1); // ext
-		if(!in_array($ext, $this->allowedExtensions)) return; // is not pdf file
+		$id = (int) $this->wire('input')->get('id');
+		$pdf = $this->getPageimageOrPagefileFromPath($file, $this->wire('pages')->get($id));
 
-		//$page = $this->wire('pages')->get($id);
-		//now I have to find field name with this file ... too complicated
-		//$pagefile = new Pagefile($page->files, '/path/to/file.pdf');
+		if(!in_array($pdf->ext, $this->allowedExtensions)) return; // is not pdf file
 
-		$pdf = new Field();
-		$pdf->type = $this->wire('modules')->get('FieldtypeFile');
-		$pdf->basename = $basename;
-		$pdf->ext = $ext;
-		$pdf->filename = $this->wire('config')->paths->files . $id . "/$basename";
-		$pdf->filesize = filesize($pdf->filename);
-		$pdf->httpUrl = $file; //MP moral bi biti fullpath
-
-		//check if file exist, it should...
-		/*if(!$myimage) {
-			$msg = "File not found";
-			$this->log->save($msg);
-			echo $err;
-			exit(0);
-		}*/
-
-		$src_size = filesize($pdf->filename);
+		$src_size = $pdf->filesize;
 
 		$this->compress($pdf, true, 'manual');
 
 		clearstatcache(true, $pdf->filename);
-		$dest_size = filesize($pdf->filename);
+		$dest_size = $pdf->filesize;
 		$percentNew = 100 - (int) ($dest_size / $src_size * 100);
 
 		printf(__('Compressed, reduced by %1$d%%'), $percentNew);
 
 		exit(0);
+
 	}
 
 	/**
@@ -275,30 +221,24 @@ object(ProcessWire\Pagefile)#315 (1) {
 		// check if engine is selected
 		if(!isset($this->configData['optBulkEngine'])) {
 			$this->writeProgressFile($this->getProgressFile(), array(
-				'percentComplete' => "",
-				'error'           => "ERROR: No engine selected.", // message displayed in progressbar
-				'file'            => "ERROR", // indicator that error occured
-				'basedir'         => "",
-				'url'             => ""
+				'percentComplete' => '',
+				'error'           => 'ERROR: No engine selected.', // message displayed in progressbar
+				'file'            => 'ERROR', // indicator that error occured
+				'basedir'         => '',
+				'url'             => ''
 			));
 			$this->log->save("No engine selected (bulk).");
 			exit(0);
 		}
 
 		$allFiles = array();
-		$selector = "type=FieldtypeFile";
-		/*
-		// returns all Fields that extend FieldtypeFile, but without FieldtypeFile
-		$pdf = new Field();
-		$pdf->type = $modules->get("FieldtypeFile");
-		$fieldtypes = $pdf->type->getCompatibleFieldtypes($pdf)->getItems();
-		unset($fieldtypes["FieldtypeFile"]);
-		$selector .= implode("|",array_keys($fieldtypes));
-		*/
-		foreach ($this->wire('fields')->find($selector) as $f) {
-			foreach ($this->wire('pages')->find("$f>0, include=all") as $p) {
+		$selector = 'type=FieldtypeFile';
+
+		// find all pages with FieldtypeFile fields that has allowed (pdf) extension
+		foreach($this->wire('fields')->find($selector) as $f) {
+			foreach($this->wire('pages')->find("$f>0, include=all") as $p) {
 				$files = $p->getUnformatted($f->name);
-				foreach ($files as $file) {
+				foreach($files as $file) {
 					if(in_array($file->ext, $this->allowedExtensions)) {
 						$allFiles[] = $file;
 					}
@@ -321,20 +261,21 @@ object(ProcessWire\Pagefile)#315 (1) {
 			$pdf = $allFiles[$i];
 			$error = null;
 
-			if (!file_exists($pdf->filename)) {
+			if(!file_exists($pdf->filename)) {
 				$error = $this->getMessage('error_read_file');
 				$this->log->save($error);
 			} else {
 				$this->compress($pdf, true, 'bulk', $i+1, $totalItems, $error);
 			}
 
-			if (file_get_contents($this->getCancelFile()) === "1") {
+			if(file_get_contents($this->getCancelFile()) === '1') {
 				// Cancel button pressed, bail out
 				break;
 			}
 		}
 
 	exit(0);
+
 	}
 
 
@@ -352,7 +293,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 	 */
 	public function compress($pdf, $force = false, $mode = 'auto', $counter = null, $total = 1, $error = null) {
 
-		if (!is_null($error)) {
+		if(!is_null($error)) {
 			$this->writeProgressFile($this->getProgressFile(), array(
 				'percentComplete' => (int) ($counter / $total * 100) . "", //type casting
 				'error'           => $error,
@@ -364,8 +305,8 @@ object(ProcessWire\Pagefile)#315 (1) {
 			return false;
 		}
 
-		if (!in_array($pdf->ext, $this->allowedExtensions)) {
-			$error = 'Error optimizing ' . $pdf->filename . ': unsupported extension';
+		if(!in_array($pdf->ext, $this->allowedExtensions)) {
+			$error = 'Error compressing ' . $pdf->filename . ': unsupported extension';
 			$this->log->save($error);
 			return false;
 		}
@@ -373,17 +314,17 @@ object(ProcessWire\Pagefile)#315 (1) {
 		$percentNew = 0;
 		$opt = $src_size = $dest_size = $q = '';
 		$mode1 = ucfirst(strtolower($mode));
-		//if (isset($this->configData["opt{$mode1}Quality"])) $q = $this->configData["opt{$mode1}Quality"];
+		//if(isset($this->configData["opt{$mode1}Quality"])) $q = $this->configData["opt{$mode1}Quality"];
 		//array_push($this->optimizeSettings['jpegoptim_options'], '-m' . $q);
 		//$this->optimizeSettings['jpegoptim_options'] = array_unique($this->optimizeSettings['jpegoptim_options']);
 
-		if (isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'labstack') {
+		if(isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'labstack') {
 			// use labStack web service
 			$opt = "labStack ($mode): ";
 
-			if ($pdf->filesize >= self::API_SIZELIMIT) {
-				$error = 'Error optimizing ' . $pdf->filename . ': file larger then ' . self::API_SIZELIMIT . ' bytes';
-				$this->log->save($error);
+			if($pdf->filesize >= self::API_SIZELIMIT) {
+				$error = 'Error compressing ' . $pdf->filename . ': file larger then ' . self::API_SIZELIMIT . ' bytes';
+				$this->log->save($opt . $error);
 				return false;
 			}
 
@@ -395,7 +336,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
 			curl_setopt($ch, CURLOPT_TIMEOUT, self::CONNECTION_TIMEOUT);
 			curl_setopt($ch, CURLOPT_POST, true);
-			if (version_compare(PHP_VERSION, '5.5') >= 0) {
+			if(version_compare(PHP_VERSION, '5.5') >= 0) {
 					$postfields = array ('file' => new CURLFile($pdf->filename, 'application/pdf', $pdf->basename));
 					curl_setopt($ch, CURLOPT_SAFE_UPLOAD, true);
 			} else {
@@ -406,7 +347,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 			$data = curl_exec($ch);
 
 			if($data === false || curl_errno($ch)) {
-				$error = 'Error optimizing ' . $pdf->filename . ': cURL error: ' . curl_error($ch);
+				$error = 'Error compressing ' . $pdf->filename . ': cURL error: ' . curl_error($ch);
 				$this->log->save($error);
 				return false;
 			}
@@ -425,7 +366,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 			$content .= "--" . $boundary . "--" . $eol;
 			$http->setHeader('Content-Type', 'multipart/form-data; boundary=' . $boundary);
 			$data = $http->post(self::API_WEBSERVICE, $content);
-			if (is_bool($data)) {
+			if(is_bool($data)) {
 				$error = 'Error compressing ' . $pdf->filename . ': ';
 				$error .= $data === true ? "request timeout" : $http->getHttpCode(true);
 				$this->log->save($error);
@@ -434,15 +375,15 @@ object(ProcessWire\Pagefile)#315 (1) {
 
 			$response = json_decode($data);
 
-			if ($response === null) {
+			if($response === null) {
 				$error = 'Error compressing ' . $pdf->filename . ': returned data is empty';
-				$this->log->save($error);
+				$this->log->save($opt . $error);
 				return false;
 			}
 
 			// write api error from webservice to json and log file
 			// don't know what I get back...
-			/*if (isset($response->error)) {
+			/*if(isset($response->error)) {
 				$error = isset($this->apiErrorCodes[$response->error]) ? ucfirst($this->apiErrorCodes[$response->error]) : $response->error;
 				$this->writeProgressFile($this->getProgressFile(), array(
 					'error_api' => $error,
@@ -451,7 +392,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 					'basedir' => basename(dirname($img->filename)),
 					'url' => $img->httpUrl
 				));
-				$error = 'Error optimizing ' . $img->filename . ': reshmush.it error: ' . $error;
+				$error = 'Error compressing ' . $img->filename . ': reshmush.it error: ' . $error;
 				$this->log->save($error);
 				return false;
 			}*/
@@ -460,18 +401,18 @@ object(ProcessWire\Pagefile)#315 (1) {
 			$src_size = $response->file->size;
 
 			// write to file only if compressed file is smaller
-			if ((int) $dest_size < (int) $src_size) {
+			if((int) $dest_size < (int) $src_size) {
 				$http = new WireHttp();
 				try {
 					$http->download(self::API_WEBSERVICE . "/" . $response->id . "/download", $pdf->filename);
 					$percentNew = 100 - (int) ($dest_size / $src_size * 100);
 				} catch(Exception $e) {
 					$error = 'Error retreiving file: ' . $e->getMessage();
-					$this->log->save($error);
+					$this->log->save($opt . $error);
 					return false;
 				}
 			}
-		} else if (isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'localtools') {
+		} else if(isset($this->configData["opt{$mode1}Engine"]) && $this->configData["opt{$mode1}Engine"] == 'localtools') {
 			// use local tools
 			$opt = "LocalTools ($mode): ";
 
@@ -492,10 +433,10 @@ object(ProcessWire\Pagefile)#315 (1) {
 
 		$this->log->save($opt . $pdf->filename . ', source ' . $src_size . ' bytes, destination ' . $dest_size . ' bytes, reduction ' . $percentNew . '%');
 
-		if (!is_null($counter) && !is_null($total)) {
+		if(!is_null($counter) && !is_null($total)) {
 			$this->writeProgressFile($this->getProgressFile(), array(
 				'percentComplete' => (int) ($counter / $total * 100) . "",
-				'counter'         => sprintf(__('Compressing file %1$d out of %2$d - %3$d%% complete'),
+				'counter'         => sprintf(__('Compressed file %1$d out of %2$d - %3$d%% complete'),
 				                     $counter, $total, (int) ($counter / $total * 100)),
 				'percentNew'      => $percentNew . "",
 				'error'           => $error,
@@ -520,9 +461,9 @@ object(ProcessWire\Pagefile)#315 (1) {
 		$modules = $this->wire('modules');
 
 		// automatic mode
-		$fieldset = $modules->get("InputfieldFieldset");
-    $fieldset->label = __("Automatic Mode");
-    $fieldset->description = __("Automatically optimize PDF files on upload.");
+		$fieldset = $modules->get('InputfieldFieldset');
+    $fieldset->label = __('Automatic Mode');
+    $fieldset->description = __('Automatically optimize PDF files on upload.');
     $fields->add($fieldset);
 
 		/*$field                = $modules->get('InputfieldRadios');
@@ -545,9 +486,9 @@ object(ProcessWire\Pagefile)#315 (1) {
 
 
 		// manual mode
-		$fieldset = $modules->get("InputfieldFieldset");
-    $fieldset->label = __("Manual Mode");
-    $fieldset->description = __("Add \"Compress\" link to page.");
+		$fieldset = $modules->get('InputfieldFieldset');
+    $fieldset->label = __('Manual Mode');
+    $fieldset->description = __('Add "Compress" link to page.');
     $fields->add($fieldset);
 
 		/*$field                = $modules->get('InputfieldRadios');
@@ -570,10 +511,10 @@ object(ProcessWire\Pagefile)#315 (1) {
 
 
 		// bulk mode
-		$fieldset = $modules->get("InputfieldFieldset");
-		$fieldset->name = "bulkcompress_fieldset";
-    $fieldset->label = __("Bulk Mode");
-    $fieldset->description = __("Compress ALL PDF files on button click.");
+		$fieldset = $modules->get('InputfieldFieldset');
+		$fieldset->name = 'bulkcompress_fieldset';
+    $fieldset->label = __('Bulk Mode');
+    $fieldset->description = __('Compress ALL PDF files on button click.');
     $fields->add($fieldset);
 
 		/*$field                = $modules->get('InputfieldRadios');
@@ -623,6 +564,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 		$fieldset->add($field);
 
 		return $fields;
+
 	}
 
 	/**
@@ -668,9 +610,59 @@ object(ProcessWire\Pagefile)#315 (1) {
 	 *
 	 */
 	private function writeProgressFile($file, $content = null) {
-		if (!is_null($content)) {
-			file_put_contents($file, json_encode($content));
+		if(!is_null($content)) file_put_contents($file, json_encode($content));
+	}
+
+	/**
+	 * Returns Pageimage or Pagefile object from file path
+	 * getPageimageOrPagefileFromPath('/site/assets/files/1234/file.jpg'); // returns either Pageimage or Pagefile object
+	 * getPageimageOrPagefileFromPath('/site/assets/files/1234/file.txt'); // returns Pagefile object
+	 * getPageimageOrPagefileFromPath('/site/assets/files/1234/none.txt'); // returns null
+	 *
+	 * @param straing $filename full path to the file eg. /site/assets/files/1234/file.jpg
+	 * @param Page|null $page if null, page will be contructed based on id present in the file path
+	 * @return Pagefile|Pageimage|null
+	 *
+	 */
+	private function getPageimageOrPagefileFromPath($filename, $page = null) {
+
+		if(is_null($page)) {
+			// try to get id from filename
+			$id = (int) explode('/', str_replace(wire('config')->urls->files, '', $filename))[0];
+			$page = $this->wire('pages')->get($id);
 		}
+
+		if(!$page->id) return null; // throw new WireException('Invalid page id');
+
+		$basename = basename($filename);
+
+		// get file field types, that includes image file type
+		$field = new Field();
+		$field->type = $this->wire('modules')->get('FieldtypeFile');
+		$fieldtypes = $field->type->getCompatibleFieldtypes($field)->getItems();
+		$selector = 'type=' . implode('|', array_keys($fieldtypes));
+
+		//foreach($this->wire('fields')->find($selector) as $field) {
+		foreach($page->fields->find($selector) as $field) {
+
+			$files = $page->getUnformatted($field->name);
+			if($files) {
+				$file = $files[$basename];
+				if($file) return $file; // match found, return Pagefile or Pageimage
+
+				//check for image variations
+				foreach($files as $file) {
+					//if(method_exists($file, "getVariations")) {
+					if($file instanceof Pageimage) {
+						$variation = $file->getVariations()->get($basename);
+						if($variation) return $variation; // match found, return Pageimage
+					}
+				}
+			}
+		}
+
+		return null; // no match
+
 	}
 
 
@@ -682,7 +674,7 @@ object(ProcessWire\Pagefile)#315 (1) {
 	public function ready() {
 
 		$page = $this->wire('page');
-		if ($page->template != 'admin') return;
+		if($page->template != 'admin') return;
 
 		$this->configData = $this->wire('modules')->getModuleConfigData($this);
 
@@ -690,31 +682,25 @@ object(ProcessWire\Pagefile)#315 (1) {
 		$input = $this->wire('input');
 		$mode = $input->get('mode');
 
-		// needed only for bulk mode in module edit settings
-		if ($input->get('name') === __CLASS__) {
+		// needed for bulk mode in module edit settings
+		if($input->get('name') === __CLASS__) {
 			$this->wire('modules')->get('JqueryMagnific');
 			$config->scripts->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.js');//?v=' . time());
 			$config->styles->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.css');//?v=' . time());
-		}
-
-		// compress files in bulk mode on button click
-		// be sure to have different name for mode so there is no collision with AutoSmush
-		if ($mode == 'bulkpdf') {
-			$this->bulkCompress();
-		}
-
-		// compress files in manual mode on clicking compress link
-		// be sure to have different name for mode so there is no collision with AutoSmush
-		if ($mode === 'compresspdf') {
-			$this->onclickCompress();
-		}
-
-		// process cancel request in bulk mode
-		// be sure to have different name for mode so there is no collision with AutoSmush
-		if ($mode === 'cancelpdf') {
-			$this->writeProgressFile($this->getCancelFile(), 1);
-			echo "1"; //success
-			exit (0);
+		
+			// compress files in bulk mode on button click
+			if($mode == 'bulkpdf') $this->bulkCompress();
+ 	
+			// compress files in manual mode on clicking compress link
+			if($mode === 'compresspdf') $this->onclickCompress();
+ 	
+			// process cancel request in bulk mode
+			if($mode === 'cancelpdf') {
+				$this->writeProgressFile($this->getCancelFile(), 1);
+				$this->log->save("Canceled.");
+				echo "1"; //success
+				exit (0);
+			}
 		}
 
 		// add compress link in manual mode on page edit

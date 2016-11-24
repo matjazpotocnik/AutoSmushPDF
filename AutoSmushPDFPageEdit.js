@@ -10,7 +10,9 @@ $(document).ready(function () {
         e.preventDefault();
         var currentItem = $(this);
         var optUrl = currentItem.attr("href");
-        currentItem.html("Optimizing <i class='fa fa-spin fa-spinner fa-fw'></i>");
+        //currentItem.html("Compressing <i class='fa fa-spin fa-spinner fa-fw'></i>");
+        //currentItem.html(" <i class='fa fa-spin fa-spinner fa-fw'></i>");
+        currentItem.html(currentItem.html() + "... <i class='fa fa-spin fa-spinner fa-fw'></i>");
 
         $.ajax({
             url: optUrl,
