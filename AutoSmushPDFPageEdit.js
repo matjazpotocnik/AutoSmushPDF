@@ -5,7 +5,7 @@
 */
 $(document).ready(function () {
     "use strict";
-    
+
     $(document).on("click", "a.InputfieldFileCompress", function (e) {
         e.preventDefault();
         var currentItem = $(this);

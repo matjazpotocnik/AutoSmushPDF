@@ -4,7 +4,7 @@
  * AutoSmushPDF
  * Compress PDF files
  *
- * @version 1.0.1
+ * @version 1.0.2
  * @author Matjaz Potocnik (matjazp)
  * @link https://github.com/matjazpotocnik/AutoSmushPDF
  *
@@ -26,7 +26,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 			'title'    => 'Auto Smush PDF',
 			'class'    => 'AutoSmushPDF',
 			'author'   => 'Matja&#382; Poto&#269;nik',
-			'version'  => '1.0.1',
+			'version'  => '1.0.2',
 			'summary'  => 'Compress PDF files',
 			'href'     => '',
 			'icon'     => 'leaf',
@@ -364,8 +364,10 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 			$content .= 'Content-Type: application/pdf' . $eol . $eol; // two eol's!!!!!
 			$content .= file_get_contents($pdf->filename) .$eol;
 			$content .= "--" . $boundary . "--" . $eol;
+			$http->setHeader('Authorization', 'Bearer 4pjdl6a9bIsGD1OlTP6kWfPs5p9kIj1u'); //todo: make this configurable
 			$http->setHeader('Content-Type', 'multipart/form-data; boundary=' . $boundary);
 			$data = $http->post(self::API_WEBSERVICE, $content);
+
 			if(is_bool($data)) {
 				$error = 'Error compressing ' . $pdf->filename . ': ';
 				$error .= $data === true ? "request timeout" : $http->getHttpCode(true);
@@ -374,7 +376,7 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 			}
 
 			$response = json_decode($data);
-
+			
 			if($response === null) {
 				$error = 'Error compressing ' . $pdf->filename . ': returned data is empty';
 				$this->log->save($opt . $error);
@@ -388,12 +390,12 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 				$this->writeProgressFile($this->getProgressFile(), array(
 					'error_api' => $error,
 					'percentComplete' => (int) ($counter / $total * 100) . "", //type casting
-					'file' => $img->basename,
-					'basedir' => basename(dirname($img->filename)),
-					'url' => $img->httpUrl
+					'file' => $pdf->basename,
+					'basedir' => basename(dirname($pdf->filename)),
+					'url' => $pdf->httpUrl
 				));
-				$error = 'Error compressing ' . $img->filename . ': reshmush.it error: ' . $error;
-				$this->log->save($error);
+				$error = 'Error compressing ' . $pdf->filename . ': ' . $error;
+				$this->log->save($opt . $error);
 				return false;
 			}*/
 
@@ -682,18 +684,17 @@ class AutoSmushPDF extends FieldtypeFile implements Module, ConfigurableModule {
 		$input = $this->wire('input');
 		$mode = $input->get('mode');
 
-		// needed for bulk mode in module edit settings
 		if($input->get('name') === __CLASS__) {
 			$this->wire('modules')->get('JqueryMagnific');
 			$config->scripts->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.js');//?v=' . time());
 			$config->styles->add($config->urls->siteModules . __CLASS__ . '/' . __CLASS__ . '.css');//?v=' . time());
-		
+
 			// compress files in bulk mode on button click
-			if($mode == 'bulkpdf') $this->bulkCompress();
- 	
+			if($mode === 'bulkpdf') $this->bulkCompress();
+
 			// compress files in manual mode on clicking compress link
 			if($mode === 'compresspdf') $this->onclickCompress();
- 	
+
 			// process cancel request in bulk mode
 			if($mode === 'cancelpdf') {
 				$this->writeProgressFile($this->getCancelFile(), 1);
